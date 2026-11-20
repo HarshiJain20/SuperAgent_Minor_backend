@@ -1,9 +1,4 @@
-"""
-ChromaDB Cloud service for document storage and retrieval.
-
-Manages a single collection with dense (Gemini) embeddings and optional
-BM25 sparse embeddings.  Provides add, search, hybrid-search, and delete.
-"""
+"""ChromaDB Cloud service for RAG document storage and retrieval."""
 
 from __future__ import annotations
 
@@ -64,7 +59,6 @@ class ChromaDBService(BaseService):
                 database=settings.CHROMADB_DATABASE,
             )
 
-            # Get or create collection
             collection_name = settings.CHROMADB_COLLECTION_NAME
             try:
                 self._collection = self._client.get_collection(name=collection_name)
@@ -74,9 +68,7 @@ class ChromaDBService(BaseService):
                     self._collection.count(),
                 )
             except Exception:
-                self._collection = self._client.create_collection(
-                    name=collection_name,
-                )
+                self._collection = self._client.create_collection(name=collection_name)
                 logger.info("Created ChromaDB collection '%s'", collection_name)
 
             await super().initialize()

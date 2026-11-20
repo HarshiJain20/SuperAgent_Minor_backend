@@ -10,6 +10,7 @@ Gemini schema sanitization, and structured usage / latency logging.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import logging
@@ -136,7 +137,32 @@ class LLMService(BaseLLMService):
             call_kwargs["tools"] = tools
 
         start = time.perf_counter()
-        response = await litellm.acompletion(**call_kwargs)
+        response = None
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                response = await litellm.acompletion(**call_kwargs)
+                break
+            except Exception as exc:
+                error_text = str(exc)
+                status_code = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+                is_temporary = (
+                    status_code == 503
+                    or "503" in error_text
+                    or "ServiceUnavailable" in type(exc).__name__
+                )
+                if not is_temporary or attempt == max_attempts - 1:
+                    raise
+                delay = 2 ** attempt
+                logger.warning(
+                    "LLM provider returned 503; retrying in %ss (%d/%d)",
+                    delay,
+                    attempt + 1,
+                    max_attempts - 1,
+                )
+                await asyncio.sleep(delay)
+
+        assert response is not None
         latency_ms = (time.perf_counter() - start) * 1000
 
         # Log latency

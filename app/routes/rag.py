@@ -139,8 +139,10 @@ async def rag_health():
     response_model=PDFListResponse,
     summary="List all uploaded PDFs",
 )
-async def list_pdfs():
-    """Return a deduplicated list of all PDFs that have been uploaded."""
+async def list_pdfs(
+    user_id: str = Query(..., description="Supabase authenticated user ID"),
+):
+    """Return only PDFs uploaded by this user."""
     svc = _chroma()
 
     try:
@@ -152,6 +154,8 @@ async def list_pdfs():
     # Group chunks by file_hash to produce one entry per PDF
     pdf_map: dict[str, dict] = {}
     for meta in raw:
+        if meta.get("owner_user_id") != user_id:
+            continue
         fh = meta.get("file_hash", "unknown")
         if fh not in pdf_map:
             pdf_map[fh] = {
@@ -175,6 +179,7 @@ async def list_pdfs():
 )
 async def upload_pdf(
     file: UploadFile = File(..., description="PDF file to upload"),
+    user_id: str = Query(..., description="Supabase authenticated user ID"),
     chunk_size: Optional[int] = Query(
         default=None,
         ge=100,
@@ -235,6 +240,11 @@ async def upload_pdf(
         raise HTTPException(
             status_code=500, detail=f"PDF parsing failed: {exc}"
         )
+
+    # Store ownership only on newly uploaded chunks. Existing shared documents
+    # are not modified or re-tagged.
+    for metadata in metadatas:
+        metadata["owner_user_id"] = user_id
 
     # Ingest into ChromaDB (embeddings are now generated inside add_documents)
     result = await svc.add_documents(

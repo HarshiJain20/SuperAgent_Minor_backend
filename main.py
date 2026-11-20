@@ -26,6 +26,7 @@ from app.services.gemini_embedding_service import GeminiEmbeddingService
 from app.services.llm_service import LLMService
 from app.services.pdf_service import PDFService
 from app.services.superagent_service import SuperAgentService
+from app.services.supabase_service import SupabaseService
 from app.services.tool_executor import ToolExecutor
 
 # ── Logging ──
@@ -45,6 +46,7 @@ composio_service = ComposioService()
 gemini_embedding_service = GeminiEmbeddingService()
 embedding_service = EmbeddingService(gemini_service=gemini_embedding_service)
 chromadb_service = ChromaDBService(gemini_service=gemini_embedding_service)
+supabase_service = SupabaseService()
 pdf_service = PDFService()
 tool_executor = ToolExecutor(
     composio_service=composio_service,
@@ -55,6 +57,7 @@ superagent_service = SuperAgentService(
     conversation_service=conversation_service,
     composio_service=composio_service,
     tool_executor=tool_executor,
+    supabase_service=supabase_service,
 )
 
 
@@ -78,6 +81,7 @@ async def lifespan(app: FastAPI):
     await gemini_embedding_service.initialize()
     await embedding_service.initialize()
     await chromadb_service.initialize()
+    await supabase_service.initialize()
     await pdf_service.initialize()
     await tool_executor.initialize()
 
@@ -89,6 +93,7 @@ async def lifespan(app: FastAPI):
         llm=llm_service,
         conversations=conversation_service,
         superagent=superagent_service,
+        supabase=supabase_service,
     )
     composio_routes.configure(service=composio_service)
     rag_routes.configure(
@@ -106,6 +111,7 @@ async def lifespan(app: FastAPI):
     await tool_executor.shutdown()
     await pdf_service.shutdown()
     await chromadb_service.shutdown()
+    await supabase_service.shutdown()
     await embedding_service.shutdown()
     await gemini_embedding_service.shutdown()
     await composio_service.shutdown()

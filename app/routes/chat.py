@@ -14,12 +14,13 @@ import json
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.models.chat import ChatRequest, ChatResponse, ConversationSummary
 from app.models.conversation import ConversationRole
 from app.services.conversation_service import ConversationService
 from app.services.llm_service import LLMService
+from app.services.supabase_service import SupabaseService
 from app.services.superagent_service import SuperAgentService
 
 logger = logging.getLogger(__name__)
@@ -30,18 +31,21 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 llm_service: LLMService | None = None
 conversation_service: ConversationService | None = None
 superagent_service: SuperAgentService | None = None
+supabase_service: SupabaseService | None = None
 
 
 def configure(
     llm: LLMService,
     conversations: ConversationService,
     superagent: SuperAgentService,
+    supabase: SupabaseService,
 ) -> None:
     """Inject service instances (called from main.py at startup)."""
-    global llm_service, conversation_service, superagent_service
+    global llm_service, conversation_service, superagent_service, supabase_service
     llm_service = llm
     conversation_service = conversations
     superagent_service = superagent
+    supabase_service = supabase
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -179,26 +183,69 @@ async def send_message(request: ChatRequest) -> ChatResponse:
 
 
 @router.get("/{conversation_id}/history")
-async def get_history(conversation_id: str) -> List[Dict[str, Any]]:
-    """Retrieve the full message history for a conversation."""
-    assert conversation_service
-    try:
-        return conversation_service.get_history(conversation_id)
-    except KeyError:
+async def get_history(
+    conversation_id: str,
+    user_id: str = Query(..., description="Supabase authenticated user ID"),
+) -> List[Dict[str, Any]]:
+    """Retrieve canonical message history from Supabase/Postgres."""
+    if not supabase_service or not supabase_service.is_initialized:
+        raise HTTPException(status_code=503, detail="Chat history persistence unavailable")
+    messages = await supabase_service.get_messages(user_id, conversation_id)
+    if not messages:
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    return messages
 
 
 @router.delete("/{conversation_id}")
-async def delete_conversation(conversation_id: str) -> dict[str, str]:
-    """Delete a conversation by ID."""
-    assert conversation_service
-    if not conversation_service.delete_conversation(conversation_id):
-        raise HTTPException(status_code=404, detail="Conversation not found.")
+async def delete_conversation(
+    conversation_id: str,
+    user_id: str = Query(..., description="Supabase authenticated user ID"),
+) -> dict[str, str]:
+    """Delete a conversation from canonical history and in-memory context."""
+    if not supabase_service or not supabase_service.is_initialized:
+        raise HTTPException(status_code=503, detail="Chat history persistence unavailable")
+    await supabase_service.delete_conversation(user_id, conversation_id)
+    if conversation_service:
+        conversation_service.delete_conversation(conversation_id)
     return {"status": "deleted", "conversation_id": conversation_id}
 
 
 @router.get("/conversations", response_model=list[ConversationSummary])
-async def list_conversations() -> list[ConversationSummary]:
-    """List all conversations with lightweight summaries."""
-    assert conversation_service
-    return conversation_service.list_conversations()
+async def list_conversations(
+    user_id: str = Query(..., description="Supabase authenticated user ID"),
+) -> list[ConversationSummary]:
+    """List this user's canonical conversations from Supabase/Postgres."""
+    if not supabase_service or not supabase_service.is_initialized:
+        raise HTTPException(status_code=503, detail="Chat history persistence unavailable")
+
+    rows = await supabase_service.list_conversations(user_id)
+    summaries: list[ConversationSummary] = []
+    for row in rows:
+        related_messages = row.get("conversation_messages") or []
+        if related_messages and isinstance(related_messages[0], dict) and "count" in related_messages[0]:
+            message_count = related_messages[0].get("count", 0)
+        else:
+            message_count = len(related_messages)
+        if not message_count:
+            # Ignore conversations created before a message was successfully
+            # persisted (for example, an interrupted or failed first request).
+            continue
+        user_messages = sorted(
+            (
+                message
+                for message in related_messages
+                if message.get("role") == "user" and message.get("content")
+            ),
+            key=lambda message: message.get("created_at", ""),
+        )
+        summaries.append(
+            ConversationSummary(
+                conversation_id=row["id"],
+                message_count=message_count,
+                created_at=row["created_at"],
+                last_message_at=row["updated_at"],
+                preview=(user_messages[0].get("content", "").strip()[:80]
+                         if user_messages else None),
+            )
+        )
+    return summaries

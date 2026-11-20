@@ -62,6 +62,10 @@ class ConversationService(BaseService):
         logger.info(EVENT, message=f"Created conversation {cid}")
         return cid
 
+    def has_conversation(self, conversation_id: str) -> bool:
+        """Return whether a conversation is currently hydrated in memory."""
+        return conversation_id in self._conversations
+
     def delete_conversation(self, conversation_id: str) -> bool:
         """Delete a conversation. Returns ``True`` if it existed."""
         self._ensure_initialized()

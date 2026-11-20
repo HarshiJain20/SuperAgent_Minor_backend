@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     COMPOSIO_ORG_KEY: str = ""
     COMPOSIO_BASE_URL: str = "https://backend.composio.dev"
 
+    # ── Supabase persistence ──
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+
     # ── Gemini Embedding ──
     GEMINI_EMBED_API_KEY: str = ""
     GEMINI_EMBED_MODEL: str = "gemini-embedding-001"

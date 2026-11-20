@@ -69,3 +69,4 @@ class ConversationSummary(BaseModel):
     message_count: int
     created_at: datetime
     last_message_at: datetime
+    preview: Optional[str] = None

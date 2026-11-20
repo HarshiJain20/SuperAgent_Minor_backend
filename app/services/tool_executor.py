@@ -81,7 +81,7 @@ class ToolExecutor(BaseService):
         self._ensure_initialized()
 
         if name == "RAG_SEARCH":
-            return await self._execute_rag_search(arguments)
+            return await self._execute_rag_search(arguments, user_id)
 
         # Default — treat as a Composio tool
         if self._composio.is_initialized:
@@ -180,6 +180,7 @@ class ToolExecutor(BaseService):
         query: str,
         n_results: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
+        user_id: str = "default",
     ) -> List[Dict[str, Any]]:
         """
         Search ChromaDB and return matching document chunks.
@@ -207,6 +208,7 @@ class ToolExecutor(BaseService):
                 query_text=query,
                 n_results=k,
                 similarity_threshold=threshold,
+                where={"owner_user_id": user_id},
             )
         except Exception as exc:
             logger.error("RAG context retrieval failed: %s", exc)
@@ -249,7 +251,9 @@ class ToolExecutor(BaseService):
 
     # ── Internal handlers ──
 
-    async def _execute_rag_search(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_rag_search(
+        self, arguments: Dict[str, Any], user_id: str
+    ) -> Dict[str, Any]:
         """Handle the internal ``RAG_SEARCH`` tool."""
         query = arguments.get("query", "")
         n_results = arguments.get("n_results", settings.RAG_TOP_K)
@@ -257,7 +261,9 @@ class ToolExecutor(BaseService):
         if not query:
             return {"data": [], "error": "Missing 'query' argument", "successful": False}
 
-        results = await self.get_rag_context(query, n_results=n_results)
+        results = await self.get_rag_context(
+            query, n_results=n_results, user_id=user_id
+        )
         return {
             "data": {
                 "results": results,

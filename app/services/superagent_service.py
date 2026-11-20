@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
+from datetime import datetime
 from typing import Any, AsyncGenerator, Optional
 
 from app.config.settings import settings
@@ -26,6 +28,7 @@ from app.services.conversation_service import ConversationService
 from app.services.llm_service import LLMService
 from app.services.tool_executor import ToolExecutor
 from app.services.base.base_service import BaseService
+from app.services.supabase_service import SupabaseService
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +97,13 @@ class SuperAgentService(BaseService):
         conversation_service: ConversationService,
         composio_service: ComposioService,
         tool_executor: ToolExecutor,
+        supabase_service: SupabaseService,
     ) -> None:
         self._llm = llm_service
         self._conversations = conversation_service
         self._composio = composio_service
         self._tool_executor = tool_executor
+        self._supabase = supabase_service
 
     # ── Lifecycle ──
 
@@ -107,6 +112,56 @@ class SuperAgentService(BaseService):
 
     async def health_check(self) -> bool:
         return self.is_initialized
+
+    async def _restore_from_supabase(
+        self, user_id: str, conversation_id: str
+    ) -> None:
+        """Hydrate an in-memory model context from the canonical history store."""
+        if self._conversations.has_conversation(conversation_id):
+            return
+
+        messages = await self._supabase.get_messages(user_id, conversation_id)
+        self._conversations.create_conversation(
+            conversation_id=conversation_id,
+            system_message=SYSTEM_PROMPT,
+            should_init_system_message=True,
+        )
+        valid_messages = [
+            {"role": message.get("role"), "content": message.get("content", "")}
+            for message in messages
+            if message.get("role") in {
+                ConversationRole.USER.value,
+                ConversationRole.ASSISTANT.value,
+            }
+            and isinstance(message.get("content"), str)
+        ]
+        if valid_messages:
+            self._conversations.extend_history(conversation_id, valid_messages)
+
+    async def _persist_message(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        role: str,
+        content: str,
+    ) -> None:
+        """Write exact history to Supabase/Postgres."""
+        message_id = f"message_{uuid.uuid4().hex}"
+        created_at = datetime.utcnow().isoformat() + "Z"
+
+        try:
+            if self._supabase.is_initialized:
+                await self._supabase.save_message(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    role=role,
+                    content=content,
+                    created_at=created_at,
+                )
+        except Exception:
+            logger.exception("Failed to persist exact chat history in Supabase")
 
     # ── Helper methods ──
 
@@ -262,6 +317,11 @@ class SuperAgentService(BaseService):
         self._ensure_initialized()
 
         # 1. Create / resume conversation
+        if conversation_id:
+            try:
+                await self._restore_from_supabase(user_id, conversation_id)
+            except Exception:
+                logger.exception("Could not restore conversation %s", conversation_id)
         cid = self._conversations.create_conversation(
             conversation_id=conversation_id,
             system_message=SYSTEM_PROMPT,
@@ -270,6 +330,12 @@ class SuperAgentService(BaseService):
 
         # 2. Add user message
         self._conversations.add_message(cid, ConversationRole.USER.value, message)
+        await self._persist_message(
+            user_id=user_id,
+            conversation_id=cid,
+            role=ConversationRole.USER.value,
+            content=message,
+        )
 
         # 3. Get Composio Tool Router meta tools
         available_tools: list[Any] = []
@@ -297,7 +363,7 @@ class SuperAgentService(BaseService):
             available_tools.append(rag_tool_def)
             logger.info("Added RAG_SEARCH tool to available tools")
 
-        # 5. Build history
+        # 5. Build the exact conversation history.
         history = self._conversations.get_formatted_history_for_model(cid)
 
         # 6. Initial LLM call
@@ -415,6 +481,12 @@ class SuperAgentService(BaseService):
                 self._conversations.add_message(
                     cid, ConversationRole.ASSISTANT.value, auth_pause_msg
                 )
+                await self._persist_message(
+                    user_id=user_id,
+                    conversation_id=cid,
+                    role=ConversationRole.ASSISTANT.value,
+                    content=auth_pause_msg,
+                )
                 yield {
                     "type": "reply",
                     "data": {
@@ -452,6 +524,12 @@ class SuperAgentService(BaseService):
         final_content = llm_response.get("content", "")
         self._conversations.add_message(
             cid, ConversationRole.ASSISTANT.value, final_content
+        )
+        await self._persist_message(
+            user_id=user_id,
+            conversation_id=cid,
+            role=ConversationRole.ASSISTANT.value,
+            content=final_content,
         )
 
         yield {
